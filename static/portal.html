@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment</title>
+<style>
+  :root{ --bg:#0e1522; --panel:#141d2f; --line:#22314d; --ink:#dbe6f7; --dim:#8fa3c2; --acc:#3ea6ff;
+         --ok:#38b26a; --warn:#e8b73a; --bad:#e05555; }
+  body{ margin:0; font:15px/1.5 system-ui,'Segoe UI',Arial,sans-serif; background:var(--bg); color:var(--ink);
+        display:flex; justify-content:center; }
+  .wrap{ max-width:430px; width:100%; padding:22px; }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px; margin-bottom:14px; }
+  h2{ margin:0 0 4px; }
+  .amt{ font-size:34px; font-weight:800; letter-spacing:0.5px; }
+  .muted{ color:var(--dim); font-size:12.5px; }
+  .btn{ background:var(--acc); color:#04203f; border:none; padding:12px 18px; border-radius:10px;
+        cursor:pointer; font-weight:700; width:100%; font-size:15px; }
+  .btn.ghost{ background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:600; }
+  .btn.tg{ background:#2ea6dd; color:#fff; text-decoration:none; display:block; text-align:center; }
+  .btn.ok{ background:var(--ok); color:#04220f; }
+  input{ width:100%; box-sizing:border-box; background:#0b1220; color:var(--ink);
+         border:1px solid var(--line); padding:10px 11px; border-radius:9px; margin:4px 0 10px; }
+  .qr{ width:230px; height:230px; margin:8px auto; display:block; background:#fff; padding:10px; border-radius:12px; }
+  .step{ color:var(--dim); font-size:13px; margin:2px 0; }
+  .status{ padding:10px 12px; border-radius:9px; border:1px solid var(--line); margin:8px 0; font-weight:600; }
+  .st-open{ border-color:var(--warn); color:var(--warn); }
+  .st-pending{ border-color:var(--warn); color:var(--warn); }
+  .st-confirmed,.st-active,.st-completed{ border-color:var(--ok); color:var(--ok); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h2 id="planName">Payment</h2>
+    <div class="muted" id="detail"></div>
+    <div class="amt" id="amount">—</div>
+  </div>
+
+  <div class="card">
+    <h3>1 · Pay by UPI</h3>
+    <div class="step">Scan this QR with any UPI app (GPay / PhonePe / Paytm):</div>
+    <img id="qr" class="qr" alt="UPI QR">
+    <div class="muted" id="upiInfo"></div>
+    <a id="payBtn" class="btn tg" target="_blank" style="margin-top:10px">Open UPI app to pay</a>
+  </div>
+
+  <div class="card">
+    <h3>2 · Tell us you paid</h3>
+    <input id="utr" placeholder="UPI transaction ID (optional)">
+    <input id="note" placeholder="Your name / note (optional)">
+    <button class="btn" id="claimBtn" onclick="claim()">I have paid ✓</button>
+    <a id="tgLink" class="btn tg" target="_blank" style="margin-top:10px">Send screenshot on Telegram 📷</a>
+    <div class="muted" style="margin-top:8px">Payment is verified manually by the admin (usually quick).
+      Keep this card open — the status updates automatically.</div>
+  </div>
+
+  <div class="card">
+    <h3>Status</h3>
+    <div class="status" id="status">loading…</div>
+    <div class="muted" id="expiry"></div>
+    <button class="btn ghost" onclick="tickStatus(true)" style="margin-top:8px">Refresh now</button>
+  </div>
+</div>
+<script>
+async function firstLoad(){
+  const slug = location.pathname.split("/").pop();
+  try {
+    const j = await (await fetch("/portal/api/session/"+slug)).json();
+    if (j.detail) { document.body.innerHTML = "<div class='card'>This payment page has expired."
+      + " Open the Checkout again from the app.</div>"; return; }
+    document.getElementById("planName").textContent = (j.plan && j.plan.plan_name) || "Access";
+    document.getElementById("amount").textContent = "₹" + (Number(j.amount)||0).toFixed(0);
+    document.getElementById("detail").textContent = "for " + (j.username||"(username not set)") +
+      " · " + (j.plan && j.plan.duration_days ? j.plan.duration_days + " days of full access" : "");
+    document.getElementById("qr").src = "/portal/api/qr/" + slug;
+    document.getElementById("payBtn").href = j.upiIntent;
+    document.getElementById("tgLink").href = j.telegramLink;
+    document.getElementById("upiInfo").textContent = "UPI ID: " + j.upiId + " (" + j.upiName + ")";
+    window.__last = j;
+    tickStatus();
+  } catch(e){ /* ignore */ }
+}
+let claimed = false;
+async function claim(){
+  const slug = location.pathname.split("/").pop();
+  const r = await (await fetch("/portal/api/claim", { method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ token: slug, utr: document.getElementById("utr").value,
+                           note: document.getElementById("note").value }) })).json();
+  claimed = true;
+  const b = document.getElementById("claimBtn");
+  b.textContent = r.status==="confirmed" ? "Confirmed ✓" : "Sent ✓ — waiting for admin";
+  b.classList.add("ok"); b.disabled = true;
+  tickStatus(true);
+}
+async function tickStatus(){
+  const slug = location.pathname.split("/").pop();
+  try{
+    const j = await (await fetch("/portal/api/session/"+slug)).json();
+    if (!j.detail){
+      const payStat = (j.payment && j.payment.status) || "none";
+      const acct = j.userAccountState || "";
+      const el = document.getElementById("status");
+      let txt, cls;
+      if (j.status === "completed" || payStat === "confirmed" || acct === "active"){
+        txt = "ACTIVE ✓ — reopen the app, you have access"; cls="st-active";
+        document.getElementById("expiry").textContent = "Valid until " + (j.subscriptionExpiry||"—");
+      } else if (payStat === "pending" || acct === "payment_pending"){
+        txt = "Payment recorded — admin verifying…"; cls="st-pending";
+      } else if (claimed){
+        txt = "Sent — admin verifies shortly…"; cls="st-pending";
+      } else {
+        txt = "Waiting for your payment"; cls="st-open";
+      }
+      el.textContent = txt; el.className = "status "+cls;
+    }
+  }catch(e){}
+}
+setInterval(tickStatus, 5000);
+firstLoad();
+</script>
+</body>
+</html>

@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin Console</title>
+<style>
+  :root{ --bg:#0e1522; --panel:#141d2f; --line:#22314d; --ink:#dbe6f7; --dim:#8fa3c2;
+         --acc:#3ea6ff; --ok:#38b26a; --warn:#e8b73a; --bad:#e05555; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; font:14px/1.45 system-ui,'Segoe UI',Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  header{ display:flex; gap:12px; align-items:center; padding:10px 16px; background:var(--panel);
+          border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; flex-wrap:wrap; }
+  header h1{ font-size:16px; margin:0; }
+  nav{ display:flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
+  nav button{ background:transparent; color:var(--dim); border:1px solid var(--line);
+              padding:6px 12px; border-radius:7px; cursor:pointer; }
+  nav button.active{ color:var(--ink); background:#1b2647; border-color:var(--acc); }
+  main{ padding:16px; max-width:1280px; margin:0 auto; }
+  table{ width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line);
+         border-radius:8px; overflow:hidden;}
+  th,td{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th{ background:#182338; color:var(--dim); font-weight:600; font-size:12.5px; white-space:nowrap; }
+  tr:last-child td{ border-bottom:none; }
+  .pill{ padding:2px 8px; border-radius:999px; font-size:11.5px; border:1px solid var(--line); white-space:nowrap; }
+  .pill.ok{ color:var(--ok); border-color:var(--ok); }
+  .pill.warn{ color:var(--warn); border-color:var(--warn); }
+  .pill.bad{ color:var(--bad); border-color:var(--bad); }
+  .pill.dim{ color:var(--dim); }
+  .btn{ background:var(--acc); color:#04203f; border:none; padding:7px 12px; border-radius:7px;
+        cursor:pointer; font-weight:600; }
+  .btn.ghost{ background:transparent; color:var(--ink); border:1px solid var(--line); }
+  .btn.danger{ background:var(--bad); color:#fff; }
+  .btn.mini{ padding:4px 9px; font-size:12px; }
+  .row-actions{ display:flex; gap:5px; flex-wrap:wrap; }
+  input,select{ background:#0b1220; color:var(--ink); border:1px solid var(--line);
+                padding:7px 9px; border-radius:7px; }
+  .toolbar{ display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; align-items:center; }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .muted{ color:var(--dim); font-size:12px; }
+  #login{ max-width:360px; margin:120px auto; }
+  pre{ background:#0b1220; border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto; max-height:340px; }
+  .toast{ position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--acc);
+          padding:10px 16px; border-radius:8px; display:none; z-index:9; }
+  h3{ margin:14px 0 8px; }
+</style>
+</head>
+<body>
+<div id="login" class="card">
+  <h2>Admin console</h2>
+  <p class="muted">Enter the admin key (printed in the server console at startup; set in config.py).</p>
+  <input id="key" type="password" placeholder="Admin key" style="width:100%">
+  <br><br><button class="btn" onclick="boot()">Enter</button>
+</div>
+
+<div id="shell" style="display:none">
+<header>
+  <h1>LPM Replica — Admin</h1>
+  <div class="muted" id="hostlabel"></div>
+  <nav>
+    <button data-t="users" class="active">Users</button>
+    <button data-t="payments">Payments</button>
+    <button data-t="villages">Villages</button>
+    <button data-t="content">Plans / Videos / Notes</button>
+    <button data-t="settings">Settings</button>
+    <button data-t="sync">Data</button>
+  </nav>
+</header>
+<main id="main"></main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const KEY = sessionStorage.getItem("admKey") || "";
+let STATE = { users:[], payments:[], villages:[], plans:[], videos:[], notes:[], settings:{}, allot:[] };
+let TAB = "users";
+
+function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.style.display="block";
+  setTimeout(()=>t.style.display="none", 2800); }
+
+async function api(path, body, method){
+  const opt = { method: method || (body ? "POST" : "GET"),
+    headers: { "X-Admin-Key": KEY, "Content-Type": "application/json" } };
+  if (body) opt.body = JSON.stringify(body);
+  const r = await fetch(path, opt);
+  if (r.status === 401) { backToLogin(); throw new Error("Bad admin key"); }
+  return r.json().catch(()=>({}));
+}
+
+function backToLogin(){
+  document.getElementById("shell").style.display="none";
+  document.getElementById("login").style.display="block";
+}
+
+async function boot(){
+  const k = document.getElementById("key").value.trim() || KEY_0();
+  if (!k) return;
+  sessionStorage.setItem("admKey", k);
+  location.reload();
+}
+function KEY_0(){ return sessionStorage.getItem("admKey") || ""; }
+
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav button").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active"); TAB=b.dataset.t; render();
+});
+
+const pill=(txt,cls)=>`<span class="pill ${cls||"dim"}">${txt}</span>`;
+function statePill(s){
+  if(s==="active") return pill("active","ok");
+  if(s==="trial_active") return pill("trial","warn");
+  if(s==="awaiting_village") return pill("awaiting village","warn");
+  if(s==="payment_pending") return pill("payment pending","warn");
+  if(s==="expired") return pill("expired","bad");
+  if(s==="subscription_required") return pill("needs subscription","bad");
+  return pill(s||"—","dim");
+}
+function money(v){ const n = Number(v||0); return "₹" + (n? n.toFixed(n%1?2:0) : "0"); }
+
+async function refreshAll(){
+  const jobs = [
+    api("/admin/api/users").then(j=>STATE.users=j.users||[]).catch(()=>{}),
+    api("/admin/api/payments").then(j=>STATE.payments=j.payments||[]).catch(()=>{}),
+    api("/admin/api/villages").then(j=>STATE.villages=j.villages||[]).catch(()=>{}),
+    api("/admin/api/plans").then(j=>STATE.plans=j.plans||[]).catch(()=>{}),
+    api("/admin/api/videos").then(j=>STATE.videos=j.videos||[]).catch(()=>{}),
+    api("/admin/api/notes").then(j=>STATE.notes=j.notes||[]).catch(()=>{}),
+    api("/admin/api/settings").then(j=>STATE.settings=j.settings||{}).catch(()=>{}),
+  ];
+  await Promise.all(jobs);
+  document.getElementById("login").style.display="none";
+  document.getElementById("shell").style.display="block";
+  document.getElementById("hostlabel").textContent = location.host;
+  render();
+}
+
+function render(){ document.getElementById("main").innerHTML = "";
+  ({users:usersTab, payments:paymentsTab, villages:villagesTab,
+    content:contentTab, settings:settingsTab, sync:syncTab})[TAB](); }
+
+/* ================= USERS ================= */
+function usersTab(){
+  const box = document.createElement("div");
+  box.innerHTML = `
+  <div class="toolbar">
+    <input id="q" placeholder="Search user / phone / village" style="min-width:280px">
+    <button class="btn ghost" onclick="refreshAll().then(render)">Reload</button>
+    <span class="muted"><b>Grant access</b> = the master switch; <b>Block</b> = hard lock (status: blocked).</span>
+  </div>
+  <table id="utbl"></table>`;
+  document.getElementById("main").appendChild(box);
+  document.getElementById("q").oninput = drawUsers;
+  drawUsers();
+}
+
+function drawUsers(){
+  const qv = (document.getElementById("q")?.value || "").toLowerCase();
+  const rows = STATE.users.filter(u=>!qv || JSON.stringify(u).toLowerCase().includes(qv));
+  const tbl = document.getElementById("utbl");
+  tbl.innerHTML = `<tr><th>User</th><th>State</th><th>Access</th><th>Expiry</th><th>Trial</th>
+     <th>Device</th><th>Villages</th><th>Actions</th></tr>`;
+  for (const u of rows){
+    const tr = document.createElement("tr");
+    const tds = [
+      `<b>${u.username}</b><div class="muted">${u.name||""} · ${u.phone||""}<br>
+         ${u.district||""} / ${u.mandal||""} / ${u.villageName||""}</div>`,
+      statePill(u.accountState),
+      u.blocked ? pill("BLOCKED","bad") :
+        (u.accessGranted ? pill("granted","ok") : pill("revoked","bad")),
+      u.subscriptionExpiry || "—",
+      u.trialEnd || "—",
+      `<span class="muted">${u.deviceId ? String(u.deviceId).slice(0,10)+"…" : "none"}</span>`,
+      `<span class="muted">${(u.villages||[]).join(", ")||"—"}</span>`,
+      `<div class="row-actions">
+        <button class="btn mini" onclick="c_access('${u.username}',${!u.accessGranted})">${
+           u.accessGranted?"Revoke":"Grant"}</button>
+        <button class="btn ghost mini" onclick="c_extend('${u.username}')">+30d</button>
+        <button class="btn ghost mini" onclick="c_expiry('${u.username}')">Set date</button>
+        <button class="btn ghost mini" onclick="c_trial('${u.username}')">Trial…</button>
+        <button class="btn ${u.blocked?"ghost":"danger"} mini" onclick="c_block('${u.username}',${!u.blocked})">${
+           u.blocked?"Unblock":"Block"}</button>
+        <button class="btn ghost mini" onclick="c_allot('${u.username}')">Village…</button>
+        <button class="btn ghost mini" onclick="c_revoke('${u.username}')">Unallot…</button>
+        <button class="btn ghost mini" onclick="c_resetPw('${u.username}')">Temp pw</button>
+        <button class="btn ghost mini" onclick="c_unbind('${u.username}')">Unbind dev</button>
+        <button class="btn danger mini" onclick="c_del('${u.username}')">Delete</button>
+      </div>`];
+    tds.forEach((h,i)=>{ const td=document.createElement("td"); td.innerHTML=h; tr.appendChild(td); });
+    tbl.appendChild(tr);
+  }
+}
+window.c_access = async (u,v)=>{ await api("/admin/api/user/set_access",{username:u,access:v});
+  toast(u+": access "+(v?"GRANTED":"REVOKED")); refreshAll(); };
+window.c_extend = async u=>{ const d=prompt("Extend "+u+" by how many days?","30"); if(!d)return;
+  const j=await api("/admin/api/user/extend",{username:u,days:Number(d)});
+  toast("Expiry → "+j.subscriptionExpiry); refreshAll(); };
+window.c_expiry = async u=>{ const d=prompt("Set expiry date (YYYY-MM-DD):",
+  STATE.users.find(x=>x.username===u)?.subscriptionExpiry || "2030-12-31"); if(!d)return;
+  await api("/admin/api/user/set_expiry",{username:u,date:d}); refreshAll(); };
+window.c_trial = async u=>{ const d=prompt("Trial days for "+u+" (0 = clear trial):","3");
+  if(d===null)return; await api("/admin/api/user/set_trial",{username:u,days:Number(d)}); refreshAll(); };
+window.c_block = async (u,v)=>{ await api("/admin/api/user/set_blocked",{username:u,blocked:v});
+  toast(u+(v?" BLOCKED":" unblocked")); refreshAll(); };
+window.c_allot = async u=>{ if(!STATE.villages.length){ alert("Create a village first (Villages tab)."); return; }
+  const list = STATE.villages.map(v=>v.v_code+" — "+v.name).join("\n");
+  const pick = prompt("Allot which vCode to "+u+"?\n\n"+list, STATE.villages[0]?.v_code||"");
+  if(!pick) return; const vcode = pick.trim().split(" ")[0].split("—")[0].trim();
+  await api("/admin/api/user/allot_village",{username:u,v_code:vcode}); toast("Allotted "+vcode); refreshAll(); };
+window.c_revoke = async u=>{
+  const cur = (STATE.users.find(x=>x.username===u)?.villages||[]).join(", ")||"none";
+  const pick = prompt("Revoke which vCode from "+u+"? (current: "+cur+")");
+  if(!pick) return;
+  await api("/admin/api/user/revoke_village",{username:u,v_code:pick.trim()}); refreshAll(); };
+window.c_resetPw = async u=>{ const j=await api("/admin/api/user/reset_password",{username:u});
+  alert("Temporary password for "+u+":\n\n"+j.tempPassword+"\n\nSend it on Telegram. must-change is ON."); };
+window.c_unbind = async u=>{ await api("/admin/api/user/unbind_device",{username:u});
+  toast("Device unbound — user can log in from a new phone"); refreshAll(); };
+window.c_del = async u=>{ if(!confirm("Delete user "+u+" (history stays)?"))return;
+  await api("/admin/api/user/delete",{username:u}); toast("Deleted"); refreshAll(); };
+
+/* ================= PAYMENTS ================= */
+function paymentsTab(){
+  const box = document.createElement("div");
+  box.innerHTML = `
+  <div class="toolbar">
+    <button class="btn ghost" onclick="refreshAll().then(render)">Reload</button>
+    <button class="btn" onclick="c_manualPay()">+ Record Telegram payment</button>
+    <span class="muted">Approve = user's expiry extends by the plan's duration and access is granted.</span>
+  </div>
+  <table id="ptbl"></table>`;
+  document.getElementById("main").appendChild(box);
+  drawPayments();
+}
+function drawPayments(){
+  const tbl = document.getElementById("ptbl");
+  tbl.innerHTML = `<tr><th>ID</th><th>User</th><th>Plan</th><th>Amount</th><th>UTR / proof</th>
+    <th>Status</th><th>Requested</th><th>Confirmed</th><th>Actions</th></tr>`;
+  for (const p of STATE.payments){
+    const tr = document.createElement("tr");
+    const st = p.status==="confirmed" ? pill("confirmed","ok")
+             : p.status==="rejected" ? pill("rejected","bad") : pill("PENDING","warn");
+    const tds = [p.id, `<b>${p.username}</b>`, p.plan_id||"", money(p.amount),
+      `<span class="muted">${p.utr||""}<br>${p.proof_note||""}</span>`, st,
+      `<span class="muted">${p.requested_at||""}</span>`,
+      `<span class="muted">${p.confirmed_at||""}</span>`,
+      p.status==="pending"
+        ? `<div class="row-actions">
+             <button class="btn mini" onclick="c_approve(${p.id})">Approve</button>
+             <button class="btn danger mini" onclick="c_reject(${p.id})">Reject</button></div>`
+        : `<span class="muted">${p.confirmed_by||""}</span>`];
+    tds.forEach(h=>{ const td=document.createElement("td"); td.innerHTML=h; tr.appendChild(td); });
+    tbl.appendChild(tr);
+  }
+}
+window.c_approve = async id=>{ const j=await api("/admin/api/payments/approve",{id});
+  toast(j.username+" → active until "+j.subscriptionExpiry); refreshAll(); };
+window.c_reject = async id=>{ await api("/admin/api/payments/reject",{id}); refreshAll(); };
+window.c_manualPay = async ()=>{
+  const u=(prompt("Username:")||"").trim(); if(!u) return;
+  const plan=(prompt("Plan ID:", (STATE.plans[0]?.plan_id||"plan_year"))||"").trim();
+  await api("/admin/api/payments/create",{username:u,planId:plan});
+  toast("Pending payment recorded — click Approve"); refreshAll();
+};
+
+/* ================= VILLAGES ================= */
+function villagesTab(){
+  const box = document.createElement("div");
+  const opts = STATE.villages.map(v=>`<option value="${v.v_code}">${v.v_code} — ${v.name}</option>`).join("");
+  box.innerHTML = `
+  <div class="grid2">
+    <div class="card">
+      <h3>Add / update village</h3>
+      <label>vCode</label><input id="vg_code" placeholder="V001"><br><br>
+      <label>Name</label><input id="vg_name" placeholder="Village name"><br><br>
+      <label>URL slug</label><input id="vg_slug" placeholder="v001 (optional)"><br><br>
+      <button class="btn" onclick="c_saveVillage()">Save village</button>
+      <button class="btn danger" onclick="c_delVillage()">Delete village</button>
+      <div class="muted" style="margin-top:10px">Each village serves its own web app at
+        <code>${location.origin}/app/&lt;slug&gt;/</code>. Login/getVillages inject the URL automatically.
+        Allot users in the Users tab.</div>
+    </div>
+    <div class="card">
+      <h3>Existing villages</h3>
+      <table id="vgtbl"></table><br>
+      <h3>Allotments</h3>
+      <table id="altbl"></table>
+    </div>
+  </div>`;
+  document.getElementById("main").appendChild(box);
+  drawVillages(); drawAllotments();
+}
+function drawVillages(){
+  const tbl = document.getElementById("vgtbl");
+  tbl.innerHTML = `<tr><th>vCode</th><th>Name</th><th>URL</th></tr>`;
+  for (const v of STATE.villages){
+    const tr=document.createElement("tr");
+    tr.innerHTML = `<td><b>${v.v_code}</b></td><td>${v.name}</td>
+      <td class="muted"><a style="color:var(--acc)" href="/app/${v.slug}/" target="_blank">/app/${v.slug}/</a></td>`;
+    tbl.appendChild(tr);
+  }
+}
+window.c_saveVillage = async ()=>{
+  const v_code=document.getElementById("vg_code").value.trim();
+  const name=document.getElementById("vg_name").value.trim();
+  const slug=document.getElementById("vg_slug").value.trim();
+  if(!v_code||!name){ toast("vCode and name required"); return; }
+  const j=await api("/admin/api/villages/save",{v_code,name,slug,enabled:true});
+  toast("Saved — URL "+j.url); refreshAll().then(render);
+};
+window.c_delVillage = async ()=>{
+  const v=prompt("Delete which vCode?", STATE.villages[0]?.v_code||"");
+  if(!v) return;
+  await api("/admin/api/villages/delete",{v_code:v.trim()}); toast("Deleted"); refreshAll().then(render);
+};
+async function drawAllotments(){
+  const j = await api("/admin/api/villages/allotments");
+  const tbl = document.getElementById("altbl");
+  tbl.innerHTML = `<tr><th>User</th><th>vCode</th><th>Since</th></tr>`;
+  for (const r of (j.rows||[])){
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${r.username}</td><td>${r.v_code}</td><td class="muted">${r.allotted_at}</td>`;
+    tbl.appendChild(tr);
+  }
+}
+
+/* ================= CONTENT ================= */
+function contentTab(){
+  const box = document.createElement("div");
+  box.innerHTML = `
+  <div class="grid2">
+    <div class="card"><h3>Plans</h3><table id="pltbl"></table><br>
+      <label>plan_id</label><input id="pl_id" style="width:180px" placeholder="plan_year">
+      <label>name</label><input id="pl_name" style="width:160px">
+      <br><br><label>amount ₹</label><input id="pl_amt" style="width:90px">
+      <label>days</label><input id="pl_days" style="width:80px" value="365">
+      <button class="btn" onclick="c_savePlan()">Save plan</button>
+    </div>
+    <div class="card"><h3>Videos catalog</h3><table id="vdtbl"></table><br>
+      <label>videoId</label><input id="vd_id" style="width:180px">
+      <label>title</label><input id="vd_title" style="width:220px">
+      <br><br><label>link (mp4)</label><input id="vd_link" style="width:380px">
+      <br><br><label>size</label><input id="vd_size" style="width:110px">
+      <label>category</label><input id="vd_cat" style="width:150px">
+      <button class="btn" onclick="c_saveVideo()">Save video</button>
+    </div>
+  </div>
+  <div class="card"><h3>Release notes</h3><table id="nttbl"></table><br>
+    <label>version</label><input id="nt_ver" style="width:120px">
+    <label>title</label><input id="nt_title" style="width:260px">
+    <br><br><textarea id="nt_notes" style="width:100%;min-height:70px;background:#0b1220;color:var(--ink);
+    border:1px solid var(--line);border-radius:7px"></textarea>
+    <button class="btn" onclick="c_saveNote()">Save note</button>
+  </div>`;
+  document.getElementById("main").appendChild(box);
+  drawPlans(); drawVideos(); drawNotes();
+}
+function drawPlans(){
+  const tbl=document.getElementById("pltbl");
+  tbl.innerHTML=`<tr><th>ID</th><th>Name</th><th>₹</th><th>Days</th><th>Order</th><th></th></tr>`;
+  for (const p of STATE.plans){
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${p.plan_id}</td><td>${p.plan_name}</td><td>${money(p.upfront_amount)}</td>
+      <td>${p.duration_days}</td><td>${p.button_order}</td>
+      <td><button class="btn danger mini" onclick='delPlan("${p.plan_id}")'>Del</button></td>`;
+    tbl.appendChild(tr);
+  }
+}
+window.c_savePlan = async ()=>{
+  await api("/admin/api/plans/save",{
+    plan_id:document.getElementById("pl_id").value.trim(),
+    plan_name:document.getElementById("pl_name").value.trim(),
+    plan_details:"Telegram manual payment",
+    upfront_amount:Number(document.getElementById("pl_amt").value||0),
+    duration_days:Number(document.getElementById("pl_days").value||365),
+    button_order:Number(STATE.plans.length+1), enabled:true});
+  refreshAll().then(render);
+};
+window.delPlan = async id=>{ await api("/admin/api/plans/delete",{plan_id:id}); refreshAll().then(render); };
+function drawVideos(){
+  const tbl=document.getElementById("vdtbl");
+  tbl.innerHTML=`<tr><th>ID</th><th>Title</th><th>Category</th><th>Size</th></tr>`;
+  for (const v of STATE.videos){
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${v.video_id}</td><td>${v.title||""}</td><td>${v.category||""}</td>
+      <td class="muted">${(v.file_size/1048576).toFixed(1)} MB</td>`;
+    tbl.appendChild(tr);
+  }
+}
+window.c_saveVideo = async ()=>{
+  await api("/admin/api/videos/save",{
+    video_id:document.getElementById("vd_id").value.trim(),
+    title:document.getElementById("vd_title").value.trim(),
+    video_link:document.getElementById("vd_link").value.trim(),
+    file_size:Number(document.getElementById("vd_size").value||0),
+    category:document.getElementById("vd_cat").value.trim(),
+    sort_order:Number(STATE.videos.length+1), enabled:true});
+  refreshAll().then(render);
+};
+function drawNotes(){
+  const tbl=document.getElementById("nttbl");
+  tbl.innerHTML=`<tr><th>Version</th><th>Title</th><th>Date</th></tr>`;
+  for (const n of STATE.notes){
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${n.version}</td><td>${n.title||""}</td><td class="muted">${n.date||""}</td>`;
+    tbl.appendChild(tr);
+  }
+}
+window.c_saveNote = async ()=>{
+  await api("/admin/api/notes/save",{
+    version:document.getElementById("nt_ver").value.trim(),
+    title:document.getElementById("nt_title").value.trim(),
+    notes:document.getElementById("nt_notes").value});
+  refreshAll().then(render);
+};
+
+/* ================= SETTINGS ================= */
+const SET_KEYS = ["update_latest_version","update_latest_version_code","update_force","update_apk_url",
+  "support_contact_email","support_contact_phone","trial_days","referral_bonus_days",
+  "telegram_link","upi_id","upi_name","upi_note","portal_hours","village_token"];
+function settingsTab(){
+  const box=document.createElement("div");
+  box.innerHTML=`<div class="card"><h3>Runtime settings</h3>
+    <i class="muted">These drive the app: update check, support screen, UPI QR, Telegram link…</i><br><br>`;
+  for (const k of SET_KEYS){
+    box.innerHTML+=`<div style="margin:6px 0"><b>${k}</b><br>
+      <input id="st_${k}" style="width:340px" value="${(STATE.settings[k] ?? "").replace(/"/g,'&quot;')}"></div>`;
+  }
+  box.innerHTML+=`<br><button class="btn" onclick="saveSettings()">Save settings</button></div>
+  <div class="card"><b>apiKey + HMAC secret</b>
+    <div class="muted">Printed in the server console at startup. They are embedded in the APK patch —
+      rotating them means rebuilding the APK. village_token is what village web-app pages send for
+      their data APIs.</div></div>`;
+  document.getElementById("main").appendChild(box);
+}
+window.saveSettings = async ()=>{
+  const values={};
+  for (const k of SET_KEYS) values[k]=document.getElementById("st_"+k).value;
+  await api("/admin/api/settings",{values}); toast("Saved"); refreshAll();
+};
+
+/* ================= DATA ================= */
+function syncTab(){
+  const box=document.createElement("div");
+  box.innerHTML=`<div class="card"><h3>Authoritative data browser</h3>
+    <div class="toolbar">
+      <input id="sb_v" placeholder="v_code (e.g. V001)">
+      <select id="sb_m"><option value="">any module</option>
+        <option>farmerQueries</option><option>tasks</option><option>farmerDetails</option></select>
+      <button class="btn ghost" onclick="syncBrowse()">Load</button>
+      <span class="muted">The merged store the native outbox lands into.</span>
+    </div><pre id="sb_out">—</pre></div>`;
+  document.getElementById("main").appendChild(box);
+}
+window.syncBrowse = async ()=>{
+  const v=document.getElementById("sb_v").value.trim(), m=document.getElementById("sb_m").value;
+  const j=await api(`/admin/api/sync/browse?v_code=${encodeURIComponent(v)}&module=${m}`);
+  document.getElementById("sb_out").textContent =
+    (j.records||[]).length+" records\n\n"+JSON.stringify(j.records||[],null,1).slice(0,20000);
+};
+
+document.getElementById("key").addEventListener("keydown",e=>{ if(e.key==="Enter") boot(); });
+if (KEY_0()) refreshAll();
+</script>
+</body>
+</html>

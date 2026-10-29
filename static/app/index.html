@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Village App</title>
+<style>
+  :root{ --bg:#10161f; --panel:#182031; --card:#1d2740; --line:#2a3854; --ink:#e3ecfb; --dim:#93a6c6;
+         --acc:#39a0ff; --ok:#3cb874; --warn:#e8b73a; --bad:#e05555; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body{ margin:0; font:15px/1.45 system-ui,'Segoe UI',Roboto,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  header{ position:sticky; top:0; z-index:5; background:var(--panel); border-bottom:1px solid var(--line);
+          padding:10px 14px; display:flex; gap:10px; align-items:center; }
+  header h1{ font-size:16px; margin:0; }
+  .muted{ color:var(--dim); font-size:12px; }
+  .search{ flex:1; background:#0d131d; border:1px solid var(--line); border-radius:9px;
+           color:var(--ink); padding:9px 12px; font-size:14px; min-width:120px; }
+  button{ font:inherit; }
+  .btn{ background:var(--acc); border:none; color:#062146; font-weight:700; padding:9px 14px;
+        border-radius:9px; cursor:pointer; white-space:nowrap; }
+  .btn.ghost{ background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:600; }
+  .btn.mini{ padding:5px 10px; font-size:12.5px; border-radius:7px; }
+  nav.tabs{ display:flex; gap:6px; padding:10px 14px 4px; flex-wrap:wrap; }
+  nav.tabs button{ background:var(--panel); color:var(--dim); border:1px solid var(--line);
+                   border-radius:999px; padding:7px 14px; cursor:pointer; }
+  nav.tabs button.active{ color:var(--ink); background:#223252; border-color:var(--acc); }
+  main{ padding:10px 14px 90px; }
+  .rec{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px;
+        margin:10px 0; }
+  .rec h3{ margin:0 0 4px; font-size:15.5px; }
+  .rec .sub{ color:var(--dim); font-size:12.5px; }
+  .kv{ display:grid; grid-template-columns:1fr 1fr; gap:4px 14px; margin-top:8px; }
+  .kv div{ font-size:13px; }
+  .kv b{ color:var(--dim); font-weight:600; display:block; font-size:11.5px; }
+  .drawer{ position:fixed; inset:0; background:rgba(5,10,18,.62); display:none; z-index:20; }
+  .drawer .panel{ position:absolute; bottom:0; left:0; right:0; max-height:82vh; overflow:auto;
+                  background:var(--panel); border-radius:16px 16px 0 0; border:1px solid var(--line);
+                  padding:16px; }
+  .drawer textarea{ width:100%; min-height:180px; background:#0d131d; color:var(--ink);
+                    border:1px solid var(--line); border-radius:9px; padding:10px; font:12.5px/1.4 ui-monospace,monospace; }
+  #syncSheet{ position:fixed; left:12px; right:12px; bottom:12px; z-index:15; background:var(--panel);
+              border:1px solid var(--acc); border-radius:14px; padding:12px; display:none; }
+  .statusbar{ padding:8px 14px; font-size:12.5px; color:var(--dim); }
+  .empty{ text-align:center; color:var(--dim); padding:40px 10px; }
+  .chip{ display:inline-block; background:#223252; color:var(--ink); border-radius:999px;
+         padding:3px 10px; font-size:12px; margin:2px 3px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="vname">Village</h1>
+  <input class="search" id="q" placeholder="Search LPM / khata / Aadhaar / name / mobile">
+  <button class="btn" id="syncBtn" onclick="openSyncSheet()">Sync</button>
+</header>
+<div class="statusbar" id="status">connecting…</div>
+<nav class="tabs" id="tabs"></nav>
+<main id="list"></main>
+
+<div id="syncSheet">
+  <div style="display:flex;gap:8px;align-items:center">
+    <b>Offline Sync Center</b>
+    <span class="muted" id="syncInfo">native core manages the outbox</span>
+    <button class="btn mini ghost" style="margin-left:auto" onclick="closeSync()">Close</button>
+  </div>
+  <div class="muted" style="margin-top:6px">
+    Native sync runs automatically (GlobalSyncWorker). This sheet mirrors its state; the bridge call
+    (<code>Android.getSyncStatus?</code>) is wired when the APK patch lands.</div>
+</div>
+
+<div class="drawer" id="drawer"><div class="panel" id="panel"></div></div>
+
+<script>
+/* ================= native bridge plumbing (contract-stable) ================= */
+function native(){ return window.Android || { callLog:(m)=>console.log("no-native",m) }; }
+function callNative(name, args){ try{
+  const fn = native()[name];
+  if (typeof fn === "function") return fn.apply(native(), args||[]);
+  native().callLog && native().callLog(name); }catch(e){ console.warn(e); } return undefined; }
+
+/* window functions MainActivity expects on the page */
+window.openGlobalSyncCenterFromNative = function(){ openSyncSheet(); };
+window.syncNavigatorFloatingSheetMode = function(mode){ callNative("syncNavigatorFloatingSheetMode",[String(mode)]); };
+window.scheduleNavigatorMapRefresh = function(){ callNative("scheduleNavigatorMapRefresh",[]); };
+window.getFarmerContextForAI = function(query, callbackId){
+  // hand the best-guess record context back to the native AI layer
+  const ctx = bestFarmerContext(query);
+  try { callNative("receiveFarmerContextForAI",[callbackId||"ai", ctx&&JSON.stringify(ctx)]); }
+  catch(e){ console.warn(e); }
+  return ctx && JSON.stringify(ctx);
+};
+window.__lpmDispatchAiContextRequest = function(msg){
+  // page-initiated AI context request hook — native dispatches and streams back through receiveAiStream
+  callNative("__lpmDispatchAiContextRequest",[msg||""]); };
+window.receiveAiStream = function(streamJson){
+  try { showToast("AI: " + (JSON.parse(streamJson).text || streamJson).slice(0,80)); }catch(e){} };
+
+/* ================= boot ================= */
+const tokenKey = "village_token";
+function slug(){
+  if (window.__VSLUG) return window.__VSLUG;          /* injected when served inline at /exec?vCode= */
+  const p = location.pathname.replace(/\/+$/,"").split("/");
+  return p[2] || p[1] || "";
+}
+let VC = null, VNAME = "", MODULES = ["farmerQueries","farmerDetails","tasks"];
+let DATA = { modules: {} }, TAB = MODULES[0];
+
+function vToken(){ return localStorage.getItem(tokenKey) || ""; }
+function setToken(t){ localStorage.setItem(tokenKey, t); }
+
+async function jsonFetch(url, opt){ const j = await fetch(url, opt); return { s: j.status, j: await j.json().catch(()=>({})) }; }
+async function apiFromToken(){ const v = localStorage.getItem(tokenKey); return v; }
+
+async function boot(){
+  const s = slug();
+  let r = await jsonFetch("/api/village/lookup/" + s);
+  if (r.s !== 200 || !r.j.vCode){ document.getElementById("status").textContent = "Unknown village app."; return; }
+  VC = r.j.vCode; VNAME = r.j.name;
+  document.getElementById("vname").textContent = VNAME;
+  document.title = VNAME + " · Parcels";
+  load();
+}
+
+async function load(){
+  const st = document.getElementById("status");
+  st.textContent = "loading records…";
+  const r = await jsonFetch("/api/village/" + VC + "", { headers: { "X-Village-Token": vToken() } });
+  if (r.s === 401){
+    st.innerHTML = "Village token needed <input id='tk' class='search' style='max-width:220px' " +
+      "placeholder='village token'><button class='btn mini' onclick='saveTk()'>Save</button>";
+    const tkEl = document.getElementById("tk"); if (tkEl && localStorage.getItem(tokenKey)) tkEl.value = "";
+    return;
+  }
+  if (r.s !== 200){ st.textContent = "Load failed: " + (r.j.detail || "error"); return; }
+  DATA = r.j; MODULES = Object.keys(r.j.modules || {});
+  document.getElementById("status").textContent = "last load: " + new Date().toLocaleTimeString();
+  buildTabs(); drawList(); drawRecordBadges();
+}
+window.saveTk = async ()=>{ setToken(document.getElementById("tk").value.trim()); load(); };
+
+function buildTabs(){
+  const nav = document.getElementById("tabs"); nav.innerHTML = "";
+  if (!MODULES.length) return;
+  if (!MODULES.includes(TAB)) TAB = MODULES[0];
+  for (const m of MODULES){
+    const b = document.createElement("button");
+    b.textContent = m + " (" + Object.keys(DATA.modules[m] || {}).length + ")";
+    if (m === TAB) b.className = "active";
+    b.onclick = ()=>{ TAB = m; buildTabs(); drawList(); };
+    nav.appendChild(b);
+  }
+}
+
+function flatten(record){
+  const f = (record && record.fields) || {};
+  const out = {};
+  const dig = (o, pfx)=>{ for (const k in o){ const v = o[k];
+    if (v && typeof v === "object" && !Array.isArray(v)) dig(v, pfx+k+".");
+    else out[pfx+k] = Array.isArray(v) ? JSON.stringify(v) : v; } };
+  dig(f, "");
+  return out;
+}
+function recTitle(vals, rid){
+  return vals.name || vals.farmerName || vals.ownerName || vals.villageName || vals.title ||
+         vals.query_id || vals.task_id || rid;
+}
+function recSub(vals, rid){
+  return ["lpm","lpNo","khata","aadhaar","mobile","village","cropType","totalExtent"]
+    .filter(k=>vals[k]).map(k=>k+": "+vals[k]).join(" · ") || rid;
+}
+function drawList(){
+  const qv = (document.getElementById("q").value || "").toLowerCase();
+  const main = document.getElementById("list"); main.innerHTML = "";
+  const recs = Object.entries(DATA.modules[TAB] || {});
+  const match = recs.filter(([,rec])=>{ const f = flatten(rec);
+    return !qv || JSON.stringify(f).toLowerCase().includes(qv); });
+  if (!match.length){
+    main.innerHTML = "<div class='empty'>No records" + (qv ? " match “"+qv+"”" : "") +
+      ".<br><br>Records appear here when created from the app (offline-safe) or via the admin Data tab." +
+      "<br><span class='muted'>v-code: "+VC+"</span></div>";
+    drawRecordBadges(); return;
+  }
+  for (const [rid, rec] of match){
+    const vals = flatten(rec);
+    const d = document.createElement("div"); d.className = "rec";
+    d.innerHTML = `<h3>${_esc(recTitle(vals,rid))}</h3>
+      <div class='sub'>${_esc(recSub(vals,rid))} · v${rec.version}</div>
+      <div class='kv'>${pickRows(vals)}</div>
+      <div style="margin-top:9px">
+        <button class='btn ghost mini' onclick="invokeAutomation('${_esc(rid)}')">Into automation panel</button>
+        <button class='btn ghost mini' onclick="openEdit('${_esc(rid)}')">Edit JSON</button>
+      </div>`;
+    main.appendChild(d);
+  }
+  drawRecordBadges();
+}
+function pickRows(vals){
+  const keys = Object.keys(vals).slice(0, 8);
+  return keys.map(k=>`<div><b>${_esc(k)}</b>${_esc(String(vals[k] ?? "").slice(0,60))}</div>`).join("");
+}
+function drawRecordBadges(){
+  callNative("syncLookupMap", [JSON.stringify(lookupMapData())]);
+}
+/* pushes the automation lookup map (lpm → owner/cultivator/crop/boundary/coords) */
+function lookupMapData(){
+  const map = {};
+  for (const [rid, rec] of Object.entries(DATA.modules.farmerDetails || {})){
+    const f = rec.fields || {};
+    const key = String(f.lpm || rid);
+    map[key] = { lat: Number(f.lat||f.latitude||0), lon: Number(f.lon||f.longitude||0),
+      isCult: !!f.isCult, crop: String(f.crop||""), totalExtent: Number(f.totalExtent||0),
+      boundary: f.boundary || [], cultivators: f.cultivators || [],
+      owner: { name: f.ownerName||"", aadhaar: String(f.aadhaar||""), mobile: String(f.mobile||""),
+               khata: String(f.khata||""), extent: Number(f.extent||0) } };
+  }
+  return { vCode: VC, schema: 1, records: map, ts: Date.now() };
+}
+window.invokeAutomation = function(rid){
+  const rec = (DATA.modules[TAB]||{})[rid]; if (!rec) return;
+  const f = flatten(rec);
+  /* original contract: seed the lookup map so the robot can resolve the record,
+     then queue the pending aadhaar(s); native returns a status string to surface */
+  try { callNative("syncLookupMap", [JSON.stringify(lookupMapData())]); } catch(e){}
+  const aadhaar = String(f.aadhaar||"").replace(/[\s-]/g,"");
+  let status;
+  try { status = callNative("startEkycPendingAutomation", [JSON.stringify({ aadhaars: aadhaar ? [aadhaar] : [] })]); } catch(e){ status = null; }
+  if (typeof status === "string" && status) showToast(status);
+  else showToast("Copied sequence queued for " + recTitle(f,rid));
+};
+
+/* ---------------- edit drawer ---------------- */
+window.openEdit = function(rid){
+  const rec = (DATA.modules[TAB]||{})[rid]; if (!rec) return;
+  const panel = document.getElementById("panel");
+  panel.innerHTML = `<h3>Edit · ${_esc(rid)} <span class="muted">(v${rec.version})</span></h3>
+    <textarea id="json">${_esc(JSON.stringify(rec.fields, null, 1))}</textarea>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class='btn' onclick="saveEdit('${_esc(rid)}',${rec.version})">Save (bumps version)</button>
+      <button class='btn ghost' onclick="closeDrawer()">Cancel</button>
+      <button class='btn ghost' style="color:var(--bad);border-color:var(--bad)"
+        onclick="delRec('${_esc(rid)}')">Delete</button>
+    </div><div id="edErr" class="muted" style="margin-top:8px"></div>`;
+  document.getElementById("drawer").style.display = "block";
+};
+window.saveEdit = async function(rid, baseVersion){
+  let fields; try { fields = JSON.parse(document.getElementById("json").value); }
+  catch(e){ document.getElementById("edErr").textContent = "Invalid JSON: "+e.message; return; }
+  const r = await jsonFetch(`/api/village/${VC}/upsert`, { method:"POST",
+    headers:{ "Content-Type":"application/json", "X-Village-Token": vToken() },
+    body: JSON.stringify({ module: TAB, recordId: rid, changedFields: fields, baseVersion }) });
+  if (r.s === 409){
+    document.getElementById("edErr").textContent =
+      "Someone edited this record (now v"+r.j.actualVersion+"). Reloading…"; setTimeout(load, 900); return; }
+  if (r.s === 200 || (r.j.status==="success")){
+    closeDrawer(); toast("Saved (v"+r.j.version+")"); load(); } 
+  else { document.getElementById("edErr").textContent = "Save failed: "+(r.j.detail||"?"); }
+};
+window.delRec = async function(rid){
+  if (!confirm("Delete "+rid+"?")) return;
+  await fetch(`/api/village/${VC}/delete`, { method:"POST",
+    headers:{ "Content-Type":"application/json", "X-Village-Token": vToken() },
+    body: JSON.stringify({ module: TAB, recordId: rid }) });
+  closeDrawer(); toast("Deleted"); load();
+};
+window.closeDrawer = ()=>{ document.getElementById("drawer").style.display="none"; };
+window.openSyncSheet = ()=>{ document.getElementById("syncSheet").style.display="block"; };
+window.closeSync = ()=>{ document.getElementById("syncSheet").style.display="none"; };
+
+/* ---------------- misc ---------------- */
+function toastBox(){ let t = document.getElementById("__toast");
+  if (!t){ t = document.createElement("div"); t.id="__toast";
+    t.style.cssText="position:fixed;bottom:80px;left:50%;transform:translateX(-50%);" +
+      "background:#223252;color:#fff;padding:9px 16px;border-radius:999px;z-index:40;display:none";
+    document.body.appendChild(t); } return t; }
+function showToast(msg){ const t = toastBox(); t.textContent = msg; t.style.display="block";
+  clearTimeout(window.__tt); window.__tt = setTimeout(()=>t.style.display="none", 2200); }
+function bestFarmerContext(query){
+  if (!query) return null;
+  const qv = String(query).toLowerCase();
+  for (const rec of Object.values(DATA.modules.farmerDetails || {})){
+    if (JSON.stringify(flatten(rec)).toLowerCase().includes(qv)) return flatten(rec);
+  }
+  return null;
+}
+function _esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",
+  ">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+document.getElementById("q").addEventListener("input", ()=>drawList());
+boot();
+</script>
+</body>
+</html>
