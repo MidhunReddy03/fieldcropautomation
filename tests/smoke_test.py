@@ -83,7 +83,7 @@ USER = "smokeuser_" + hashlib.sha256(str(hash("x")).encode()).hexdigest()[:8]
 jsp = call("registerUser", username=USER, subscriberName="Smoke Tester", email="a@b.c",
            phoneNumber="9000000000", district="D", mandal="M", village="Vgv",
            referralUsername="adminprem")
-check("registerUser.grants trial", jsp.get("status") == "registered" and jsp.get("trialGranted") is True,
+check("registerUser.grants no trial (trial=0)", jsp.get("status") == "registered" and jsp.get("trialGranted") is False,
       json.dumps(jsp))
 TP = jsp["tempPassword"]
 
@@ -93,7 +93,7 @@ check("login wrong pw unauthorized", jbad.get("status") == "unauthorized", json.
 j = call("login", username=USER, password=TP)
 check("login success", j.get("status") == "success", json.dumps(j))
 check("login mustChange", j.get("mustChange") is True)
-check("login trial_active", j.get("accountState") == "trial_active", json.dumps(j))
+check("login subscription_required (no trial)", j.get("accountState") == "subscription_required", json.dumps(j))
 TOKEN, REFRESH = j["token"], j["refreshToken"]
 
 j = call("changePassword", token=TOKEN, newPassword="NewStrongPw1!")
