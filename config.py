@@ -28,7 +28,7 @@ ADMIN_KEY = "FP-ADM-2026-Lsd4PPEhpL3jPQjxdgdbz3kQ95bz"     # login key for /admi
 ADMIN_PASSWORD_SALT_ROUNDS = 2_000_000     # pbkdf2 iterations
 
 # ===== Business defaults (also editable live from the admin panel) =====
-TRIAL_DAYS_DEFAULT = 3
+TRIAL_DAYS_DEFAULT = 0
 ACCESS_TOKEN_MINUTES = 12 * 60
 REFRESH_TOKEN_DAYS = 45
 SYNC_PROTOCOL_VERSION = 3
