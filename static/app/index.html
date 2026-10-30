@@ -226,13 +226,12 @@ function lookupMapData(){
   }
   /* uploaded (phone-local) farmers join the same lookup map for the robot */
   for (const [i, u] of UPLOADED.entries()){
-    const key = String(u.lpm || u.aadhaar || "u" + i);
-    map[key] = { lat: Number(u.lat || 0), lon: Number(u.lon || 0), isCult: false,
-      crop: String(u.crop || ""), totalExtent: Number(String(u.extent).replace(/[^\d.\-]/g, "") || 0),
+    const key = String(u.aadhaar || "u" + i);
+    map[key] = { lat: 0, lon: 0, isCult: false,
+      crop: "", totalExtent: 0,
       boundary: [], cultivators: [],
-      owner: { name: String(u.name || ""), aadhaar: String(u.aadhaar || ""),
-               mobile: String(u.mobile || ""), khata: String(u.khata || ""),
-               extent: Number(String(u.extent).replace(/[^\d.\-]/g, "") || 0) } };
+      owner: { name: "", aadhaar: String(u.aadhaar || ""),
+               mobile: "", khata: "", extent: 0 } };
   }
   return { vCode: VC, schema: 1, records: map, ts: Date.now() };
 }
@@ -369,9 +368,7 @@ function aadOk(v){ const s = stripAad(v); return /^[2-9][0-9]{11}$/.test(s) ? s 
 
 /* ---- template download ---- */
 window.dlTemplate = function(){
-  const csv = "aadhaar,name,lpm,mobile,crop,khata,extent,lat,lon\n" +
-              "456789123456,Ravi,77,9000000000,MTU-7029,123,2.5,17.1000,79.2000\n" +
-              "987654321098,Sita Devi,78,9000000001,MTU-7029,124,1.8,17.1002,79.2003\n";
+  const csv = "aadhaar\n456789123456\n987654321098\n234567891234\n";
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   a.download = "fieldpilot-farmer-template.csv";
@@ -434,45 +431,22 @@ window.onFilePick = async function(el){
 
 function ingestTable(table, label){
   if (!table || !table.length){ showToast("Empty file"); return; }
-  /* header row = the first row containing any word-like cell */
+  /* header row detection - find column with "aadhaar" (case-insensitive) */
   let hdr = null, start = 0;
   {
-    const first = table[0].map(v => String(v));
-    const wordy = first.some(v => v.length && /[a-zA-Z\u00C0-\u024F\u0900-\u097F]/.test(v) &&
-                                  !/^[0-9\s\-]+$/.test(v));
-    if (wordy){ hdr = first.map(h => h.trim().toLowerCase()); start = 1; }
+    const first = table[0].map(v => String(v).trim().toLowerCase());
+    const i = first.findIndex(h => /aadhaar|aadhar|adhar/.test(h));
+    if (i >= 0){ hdr = first; start = 1; }
   }
-  const idx = (tests) => { let i = -1;
-    if (hdr){ i = hdr.findIndex(h => tests.some(t => (t instanceof RegExp) ? t.test(h) : h === t)); }
-    return i; };
-  const iAad = idx([/aadhaar|aadhar|adhar/]);
-  const iName = idx([/name|owner|farmer/]);
-  const iLpm = idx([/^lpm$/, /^lp ?no$/, /^l\.?p\.?m\.?/]);
-  const iMob = idx([/mobile|phone/]);
-  const iCrop = idx([/crop|variety/]);
-  const iKhata = idx([/khata|survey|pattadar/]);
-  const iExt = idx([/extent|acres|area/]);
-  const iLat = idx([/^lat|latitude/]);
-  const iLon = idx([/^lon|longitude|^lng/]);
+  const iAad = hdr ? hdr.findIndex(h => /aadhaar|aadhar|adhar/.test(h)) : 0; // default to column 0
   const seen = new Set(UPLOADED.map(u => u.aadhaar));
   let added = 0, skipped = 0;
   for (let r = start; r < table.length; r++){
     const cells = table[r].map(v => v == null ? "" : v);
-    const a = aadOk(iAad >= 0 ? cells[iAad] : cells[0]);
-    if (!a || seen.has(a)){ if ((iAad >= 0 ? cells[iAad] : cells[0]) !== "") skipped++; continue; }
+    const a = aadOk(cells[iAad]);
+    if (!a || seen.has(a)){ if (cells[iAad] !== "") skipped++; continue; }
     seen.add(a);
-    const num = (v) => { const n = Number(String(v).replace(/[^\d.\-]/g, "")); return isFinite(n) ? n : 0; };
-    UPLOADED.push({
-      aadhaar: a,
-      name: (iName >= 0 ? String(cells[iName]) : "").trim(),
-      lpm: (iLpm >= 0 ? String(cells[iLpm]) : "").trim(),
-      mobile: (iMob >= 0 ? stripAad(cells[iMob]) : "").trim(),
-      crop: (iCrop >= 0 ? String(cells[iCrop]) : "").trim(),
-      khata: (iKhata >= 0 ? String(cells[iKhata]) : "").trim(),
-      extent: (iExt >= 0 ? String(cells[iExt]) : "").trim(),
-      lat: (iLat >= 0 ? num(cells[iLat]) : 0),
-      lon: (iLon >= 0 ? num(cells[iLon]) : 0)
-    });
+    UPLOADED.push({ aadhaar: a });  // ONLY Aadhaar stored
     added++;
   }
   saveUploaded(); buildTabs(); drawList(); renderPermCard();
@@ -486,18 +460,9 @@ window.clearUploaded = function(){
   UPLOADED = []; saveUploaded(); buildTabs(); drawList(); renderPermCard();
 };
 
-/* ---- uploaded tab rendering (same card format as synced records) ---- */
+/* ---- uploaded tab rendering (Aadhaar-only cards) ---- */
 function uplCardVals(u){
-  const out = { aadhaar: u.aadhaar, upload: "phone" };
-  if (u.name) out.name = u.name;
-  if (u.lpm) out.lpm = u.lpm;
-  if (u.mobile) out.mobile = u.mobile;
-  if (u.crop) out.crop = u.crop;
-  if (u.khata) out.khata = u.khata;
-  if (u.extent) out.extent = u.extent;
-  if (u.lat) out.lat = String(u.lat);
-  if (u.lon) out.lon = String(u.lon);
-  return out;
+  return { aadhaar: u.aadhaar, upload: "phone" };
 }
 function drawUploadedCards(qv){
   const main = document.getElementById("list"); main.innerHTML = "";
