@@ -441,8 +441,9 @@ function ingestTable(table, label){
   }
   const idxFor = (rx) => hdr ? hdr.findIndex(h => rx.test(h)) : -1;
   const iAad   = hdr ? idxFor(/aadhaar|aadhar|adhar/) : 0;   // default to column 0
-  const iMob   = idxFor(/mobile|phone|whatsapp/);
-  const iCast  = idxFor(/caste|category|social|jati/);
+  /* no header? assume fixed layout: col 1 = Aadhaar, col 2 = mobile, col 3 = caste */
+  const iMob   = hdr ? idxFor(/mobile|phone|whatsapp/) : (start ? -1 : 1);
+  const iCast  = hdr ? idxFor(/caste|category|social|jati/) : (start ? -1 : 2);
   const seen = new Set(UPLOADED.map(u => u.aadhaar));
   let added = 0, skipped = 0;
   for (let r = start; r < table.length; r++){
