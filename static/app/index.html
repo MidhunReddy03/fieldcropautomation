@@ -231,7 +231,8 @@ function lookupMapData(){
       crop: "", totalExtent: 0,
       boundary: [], cultivators: [],
       owner: { name: "", aadhaar: String(u.aadhaar || ""),
-               mobile: "", khata: "", extent: 0 } };
+               mobile: String(u.mobile || ""), caste: String(u.caste || ""),
+               khata: "", extent: 0 } };
   }
   return { vCode: VC, schema: 1, records: map, ts: Date.now() };
 }
@@ -348,7 +349,7 @@ window.renderPermCard = function(){
          <input type="file" id="sheetFile" accept=".xlsx,.xls,.csv" style="display:none" onchange="onFilePick(this)">
        </div>
        <div class="muted" style="margin-top:6px">
-         Sheet columns: <b>Aadhaar</b> (required) + optional Name, LPM, Mobile, Crop, Khata, Extent, Lat, Lon — .xlsx or .csv.
+         Sheet columns: <b>Aadhaar</b> (required) + optional <b>Mobile</b>, <b>Caste</b> — the robot types the mobile&nbsp;number and picks the caste&nbsp;category on the eKYC form — .xlsx or .csv.
          Uploaded farmers stay on this phone only.</div>`;
   } else {
     box.innerHTML =
@@ -368,7 +369,7 @@ function aadOk(v){ const s = stripAad(v); return /^[2-9][0-9]{11}$/.test(s) ? s 
 
 /* ---- template download ---- */
 window.dlTemplate = function(){
-  const csv = "aadhaar\n456789123456\n987654321098\n234567891234\n";
+  const csv = "aadhaar,mobile,caste\n456789123456,9000000000,General\n987654321098,9000000001,BC-B\n234567891234,9848000111,SC\n";
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   a.download = "fieldpilot-farmer-template.csv";
@@ -438,7 +439,10 @@ function ingestTable(table, label){
     const i = first.findIndex(h => /aadhaar|aadhar|adhar/.test(h));
     if (i >= 0){ hdr = first; start = 1; }
   }
-  const iAad = hdr ? hdr.findIndex(h => /aadhaar|aadhar|adhar/.test(h)) : 0; // default to column 0
+  const idxFor = (rx) => hdr ? hdr.findIndex(h => rx.test(h)) : -1;
+  const iAad   = hdr ? idxFor(/aadhaar|aadhar|adhar/) : 0;   // default to column 0
+  const iMob   = idxFor(/mobile|phone|whatsapp/);
+  const iCast  = idxFor(/caste|category|social|jati/);
   const seen = new Set(UPLOADED.map(u => u.aadhaar));
   let added = 0, skipped = 0;
   for (let r = start; r < table.length; r++){
@@ -446,7 +450,12 @@ function ingestTable(table, label){
     const a = aadOk(cells[iAad]);
     if (!a || seen.has(a)){ if (cells[iAad] !== "") skipped++; continue; }
     seen.add(a);
-    UPLOADED.push({ aadhaar: a });  // ONLY Aadhaar stored
+    const u = { aadhaar: a };
+    const mob = stripAad(cells[iMob] || "").replace(/[^\d]/g, "").trim();
+    if (mob) u.mobile = mob.slice(0, 10);
+    const cast = String(cells[iCast] || "").trim();
+    if (cast) u.caste = cast;
+    UPLOADED.push(u);
     added++;
   }
   saveUploaded(); buildTabs(); drawList(); renderPermCard();
@@ -460,9 +469,12 @@ window.clearUploaded = function(){
   UPLOADED = []; saveUploaded(); buildTabs(); drawList(); renderPermCard();
 };
 
-/* ---- uploaded tab rendering (Aadhaar-only cards) ---- */
+/* ---- uploaded tab rendering (Aadhaar + Automation fields cards) ---- */
 function uplCardVals(u){
-  return { aadhaar: u.aadhaar, upload: "phone" };
+  const out = { aadhaar: u.aadhaar, upload: "phone" };
+  if (u.mobile) out.mobile = u.mobile;
+  if (u.caste) out.caste = u.caste;
+  return out;
 }
 function drawUploadedCards(qv){
   const main = document.getElementById("list"); main.innerHTML = "";
@@ -505,15 +517,22 @@ window.startAll = function(){
   } else {
     fields = Object.values(DATA.modules[TAB] || {}).map(r => r.fields || {});
   }
-  const seen = new Set(); const aadhaars = [];
+  const seen = new Set(); const aadhaars = []; const details = {};
   for (const f of fields){
     const a = aadOk(f && f.aadhaar);
-    if (a && !seen.has(a)){ seen.add(a); aadhaars.push(a); }
+    if (!a || seen.has(a)) continue;
+    seen.add(a); aadhaars.push(a);
+    /* per-farmer automation fields (robot pastes mobile, picks caste) */
+    const mob = stripAad(String(f.mobile || "")).replace(/[^\d]/g, "");
+    const cast = String(f.caste || f.socialCategory || "").trim();
+    if (mob.length === 10 || cast) { const d = {}; if (mob.length === 10) d.mobile = mob; if (cast) d.caste = cast; details[a] = d; }
   }
   if (!aadhaars.length){ showToast("No Aadhaars to automate on this screen"); return; }
   try { callNative("syncLookupMap", [JSON.stringify(lookupMapData())]); } catch(e){}
+  const payload = { aadhaars: aadhaars };
+  if (Object.keys(details).length) payload.details = details;
   let status;
-  try { status = callNative("startEkycPendingAutomation", [JSON.stringify({ aadhaars: aadhaars })]); }
+  try { status = callNative("startEkycPendingAutomation", [JSON.stringify(payload)]); }
   catch(e){ status = null; }
   if (typeof status === "string" && status) showToast(status);
   else showToast("▶ " + aadhaars.length + " farmer(s) queued — robot runs them one by one");
@@ -522,8 +541,15 @@ window.startAll = function(){
 window.invokeUpload = function(i){
   const u = UPLOADED[i]; if (!u) return;
   try { callNative("syncLookupMap", [JSON.stringify(lookupMapData())]); } catch(e){}
+  const payload = { aadhaars: [u.aadhaar] };
+  if (u.mobile || u.caste){
+    const d = {};
+    if (u.mobile) d.mobile = u.mobile;
+    if (u.caste) d.caste = u.caste;
+    payload.details = { [u.aadhaar]: d };
+  }
   let status;
-  try { status = callNative("startEkycPendingAutomation", [JSON.stringify({ aadhaars: [u.aadhaar] })]); }
+  try { status = callNative("startEkycPendingAutomation", [JSON.stringify(payload)]); }
   catch(e){ status = null; }
   if (typeof status === "string" && status) showToast(status);
   else showToast("Automation queued · ···· " + u.aadhaar.slice(-4));
