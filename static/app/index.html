@@ -556,6 +556,87 @@ window.invokeUpload = function(i){
   else showToast("Automation queued · ···· " + u.aadhaar.slice(-4));
 };
 
+
+/* ===== eKYC Progress Poll (FieldPilot auto-queue) ===== */
+window.ekycPollTimer = null;
+window.ekycPollRunning = false;
+
+window.startProgressPoll = function() {
+    if (window.ekycPollRunning) return;
+    window.ekycPollRunning = true;
+    console.log('[ekyc] progress poll started');
+
+    window.ekycPollTimer = setInterval(async () => {
+        try {
+            if (!window.Android || typeof window.Android.ekycProgress !== 'function') {
+                return; // bridge not ready
+            }
+            const json = window.Android.ekycProgress();
+            if (!json) return;
+            const prog = JSON.parse(json);
+            if (!prog.run) {
+                // automation not running or finished
+                stopProgressPoll();
+                return;
+            }
+
+            console.log('[ekyc] progress:', prog);
+
+            // Check for newly completed farmers
+            if (prog.results && Array.isArray(prog.results)) {
+                for (const r of prog.results) {
+                    if (r.ok === true && r.aadhaar) {
+                        // SUCCESS: remove from UPLOADED list
+                        const idx = UPLOADED.findIndex(u => u.aadhaar === r.aadhaar);
+                        if (idx >= 0) {
+                            UPLOADED.splice(idx, 1);
+                            saveUploaded();
+                            buildTabs();
+                            drawList();
+                            renderPermCard();
+                            console.log('[ekyc] removed completed farmer:', r.aadhaar);
+                        }
+                    } else if (r.ok === false && r.aadhaar) {
+                        // FAILURE: mark card visually (add error flag)
+                        const idx = UPLOADED.findIndex(u => u.aadhaar === r.aadhaar);
+                        if (idx >= 0) {
+                            UPLOADED[idx]._ekycError = r.reason || 'failed';
+                            buildTabs();
+                            drawList();
+                            renderPermCard();
+                            console.log('[ekyc] marked failed farmer:', r.aadhaar, r.reason);
+                        }
+                    }
+                }
+            }
+
+            // If automation finished (run=false), stop polling
+            if (!prog.run) {
+                stopProgressPoll();
+            }
+        } catch (e) {
+            console.error('[ekyc] poll error:', e);
+        }
+    }, 2500); // poll every 2.5s
+};
+
+window.stopProgressPoll = function() {
+    if (window.ekycPollTimer) {
+        clearInterval(window.ekycPollTimer);
+        window.ekycPollTimer = null;
+    }
+    window.ekycPollRunning = false;
+    console.log('[ekyc] progress poll stopped');
+};
+
+// Auto-start poll when automation is queued
+const origStartAll = window.startAll;
+window.startAll = function() {
+    origStartAll.apply(this, arguments);
+    // Start polling after a short delay to let the native side initialize
+    setTimeout(() => window.startProgressPoll(), 1000);
+};
+
 /* boot the extras along with the page (after loadUploaded, render the gate) */
 loadUploaded();
 renderPermCard();
